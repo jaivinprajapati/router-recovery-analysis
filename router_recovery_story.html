@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Router Recovery — Analysis</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; color: #1a1a2e; line-height: 1.6; }
+
+  /* ---- HEADER ---- */
+  .header { background: linear-gradient(135deg, #1F4E79, #2E75B6); color: white; padding: 36px 60px 30px; }
+  .header h1 { font-size: 26px; font-weight: 700; margin-bottom: 4px; }
+  .header p  { font-size: 13px; opacity: 0.8; }
+
+  /* ---- SUMMARY PANEL ---- */
+  .summary-panel { background: white; border-bottom: 3px solid #2E75B6; padding: 32px 60px 28px; }
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; margin-bottom: 28px; border: 1px solid #e0e8f4; border-radius: 8px; overflow: hidden; }
+  .summary-col { padding: 20px 24px; border-right: 1px solid #e0e8f4; }
+  .summary-col:last-child { border-right: none; }
+  .summary-col .col-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #2E75B6; margin-bottom: 12px; }
+  .summary-col ul { list-style: none; }
+  .summary-col ul li { font-size: 13px; color: #333; padding: 4px 0; padding-left: 16px; position: relative; border-bottom: 1px solid #f4f6f9; }
+  .summary-col ul li:last-child { border-bottom: none; }
+  .summary-col ul li::before { content: ""; position: absolute; left: 0; top: 10px; width: 7px; height: 7px; border-radius: 50%; background: #2E75B6; }
+  .summary-col ul li.bad::before  { background: #C00000; }
+  .summary-col ul li.warn::before { background: #C55A11; }
+  .summary-col ul li.good::before { background: #375623; }
+  .summary-col ul li strong { color: #1F4E79; }
+
+  /* KPI strip */
+  .kpi-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 24px; }
+  .kpi { background: #f8fafd; border: 1px solid #dde8f5; border-radius: 8px; padding: 14px 16px; text-align: center; }
+  .kpi .kv { font-size: 24px; font-weight: 800; }
+  .kpi .kv.red    { color: #C00000; }
+  .kpi .kv.orange { color: #C55A11; }
+  .kpi .kv.blue   { color: #1F4E79; }
+  .kpi .kv.green  { color: #375623; }
+  .kpi .kl { font-size: 11px; color: #666; margin-top: 3px; line-height: 1.4; }
+
+  /* conclusion box */
+  .conclusion-box { background: #FFF8E1; border-left: 5px solid #FFC107; border-radius: 4px; padding: 16px 20px; margin-bottom: 24px; }
+  .conclusion-box .ct { font-weight: 700; font-size: 13px; color: #7f6000; margin-bottom: 6px; }
+  .conclusion-box p { font-size: 13.5px; color: #444; margin: 0; }
+
+  /* jump links */
+  .jump-links { display: flex; flex-wrap: wrap; gap: 8px; }
+  .jump-links span { font-size: 12px; font-weight: 700; color: #888; margin-right: 4px; align-self: center; }
+  .jump-link { display: inline-block; font-size: 12px; font-weight: 600; color: #2E75B6; background: #EBF3FB; border: 1px solid #BDD7EE; border-radius: 20px; padding: 4px 14px; text-decoration: none; transition: background 0.15s; }
+  .jump-link:hover { background: #2E75B6; color: white; }
+
+  /* ---- DETAIL SECTIONS ---- */
+  .container { max-width: 1100px; margin: 0 auto; padding: 36px 30px; }
+  .detail-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #888; margin: 32px 0 12px; padding-left: 4px; }
+
+  .chapter { background: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); margin-bottom: 24px; overflow: hidden; scroll-margin-top: 20px; }
+  .chapter-header { padding: 18px 28px 14px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 12px; }
+  .chapter-num { background: #1F4E79; color: white; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; white-space: nowrap; }
+  .chapter-header h2 { font-size: 16px; font-weight: 700; color: #1F4E79; }
+  .chapter-body { padding: 22px 28px; }
+  .chapter-footer { background: #f8fafd; padding: 12px 28px; border-top: 1px solid #eee; font-size: 11.5px; color: #888; }
+
+  /* ---- COMMON ---- */
+  .signal-box { background: #EBF3FB; border-left: 4px solid #2E75B6; border-radius: 4px; padding: 12px 16px; margin-bottom: 16px; font-size: 13.5px; }
+  .signal-box strong { color: #1F4E79; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 14px 0; }
+  th { background: #1F4E79; color: white; padding: 9px 12px; text-align: center; font-weight: 600; }
+  td { padding: 8px 12px; text-align: center; border-bottom: 1px solid #f0f0f0; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #f7fafd; }
+  td.label { text-align: left; font-weight: 500; }
+  .good    { color: #375623; font-weight: 700; }
+  .warn    { color: #7f6000; font-weight: 700; }
+  .bad     { color: #9c0006; font-weight: 700; }
+  .neutral { color: #555; }
+
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin: 14px 0; }
+  .stat-card { background: #f8fafd; border: 1px solid #dde8f5; border-radius: 8px; padding: 14px 18px; text-align: center; }
+  .stat-card .num { font-size: 26px; font-weight: 800; color: #1F4E79; }
+  .stat-card .num.red    { color: #C00000; }
+  .stat-card .num.orange { color: #C55A11; }
+  .stat-card .num.green  { color: #375623; }
+  .stat-card .lbl { font-size: 11.5px; color: #666; margin-top: 3px; line-height: 1.4; }
+
+  .insight { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0; font-size: 13px; }
+  .insight-icon { font-size: 15px; margin-top: 1px; flex-shrink: 0; }
+  .insight p { color: #333; margin: 0; }
+  .insight strong { color: #1F4E79; }
+
+  .verdict { background: #FFF9F0; border: 1px solid #F4CCCC; border-radius: 6px; padding: 12px 16px; margin-top: 16px; }
+  .verdict .v-title { font-weight: 700; color: #7B2C2C; font-size: 12.5px; margin-bottom: 5px; }
+  .verdict p { font-size: 13px; color: #555; margin: 0; }
+
+  .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 12px; margin-right: 4px; }
+  .tag-skip  { background: #e8f4e8; color: #375623; }
+  .tag-dig   { background: #fce4d6; color: #833c00; }
+  .tag-watch { background: #fff2cc; color: #7f6000; }
+
+  h3 { font-size: 13.5px; font-weight: 700; color: #1F4E79; margin: 18px 0 8px; }
+  p  { font-size: 13px; color: #444; margin-bottom: 8px; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .view-card { background: #f8fafd; border: 1px solid #dde8f5; border-radius: 8px; padding: 14px 18px; margin-bottom: 10px; }
+  .view-card .vc-title { font-weight: 700; color: #1F4E79; font-size: 13px; margin-bottom: 8px; }
+
+  .declined-table th:nth-child(n+3) { background: #C55A11; }
+</style>
+</head>
+<body>
+
+<!-- ============================================================ -->
+<!--  HEADER                                                       -->
+<!-- ============================================================ -->
+<div class="header">
+  <h1>Router Recovery — Analysis</h1>
+  <p>Wiom Analytics &nbsp;|&nbsp; Data as of Apr 7, 2026 &nbsp;|&nbsp; All Partners &nbsp;|&nbsp; Jan 2026 – Mar 2026</p>
+</div>
+
+<!-- ============================================================ -->
+<!--  EXECUTIVE SUMMARY                                            -->
+<!-- ============================================================ -->
+<div class="summary-panel">
+
+  <!-- KPI strip -->
+  <div class="kpi-strip">
+    <div class="kpi">
+      <div class="kv red">58.2%</div>
+      <div class="kl">Mar 1–16 recovery rate<br>(21-day window expired)</div>
+    </div>
+    <div class="kpi">
+      <div class="kv orange">63.8% → 58.2%</div>
+      <div class="kl">PUT recovery rate<br>Jan 2026 → Mar 1–16 (−5.6pp)</div>
+    </div>
+    <div class="kpi">
+      <div class="kv blue">11,963</div>
+      <div class="kl">Tickets in Mar 1–16 cohort<br>(window closed, fully comparable)</div>
+    </div>
+    <div class="kpi">
+      <div class="kv red">Small partners</div>
+      <div class="kl">55.7% → 46.2% (−9.5pp)<br>steepest decline by segment</div>
+    </div>
+    <div class="kpi">
+      <div class="kv orange">Systemic</div>
+      <div class="kl">All cohorts declining — even<br>top performers down 6.5pp</div>
+    </div>
+  </div>
+
+  <!-- 3-col: issue / approach / findings -->
+  <div class="summary-grid">
+
+    <div class="summary-col">
+      <div class="col-title">The Issue</div>
+      <ul>
+        <li class="bad">Mar 1–16 cohort (21-day window expired) recovery rate: <strong>58.2%</strong></li>
+        <li class="bad">Down from <strong>63.8% in Jan</strong> — a 5.6pp decline over 3 months</li>
+        <li class="warn">Small partners own ~36% of tickets and show steepest decline: <strong>55.7% to 46.2%</strong></li>
+        <li class="bad">Even top-performing (Consistent) partners dropped 6.5pp — pointing to systemic cause</li>
+        <li>Active partners own &gt;95% of ticket volume — the problem sits entirely with them</li>
+      </ul>
+    </div>
+
+    <div class="summary-col">
+      <div class="col-title">What We Checked</div>
+      <ul>
+        <li>Partner status split — Active vs Termination vs Suspended</li>
+        <li>Device bonus earning pattern — who earns consistently vs who stopped</li>
+        <li>Customer base size — Large vs Mid vs Small partners</li>
+        <li>City — Delhi vs Mumbai vs Bharat</li>
+        <li>Tenure — Early / Established / Seasoned / Mature / Legacy</li>
+        <li>Ticket-level recovery rate by each cohort — contribution to overall decline</li>
+        <li>Router Sikka feature — score-based bonus exception path</li>
+      </ul>
+    </div>
+
+    <div class="summary-col">
+      <div class="col-title">What We Found</div>
+      <ul>
+        <li class="bad">Decline is broad-based — all cohorts, all cities, all tenure buckets declining</li>
+        <li class="warn">Small partners show biggest drop (−9.5pp) and overlap with Bharat — a <strong>composition effect</strong></li>
+        <li class="warn">89 "Declining" partners hold only 5% of tickets — not enough to explain the full decline</li>
+        <li class="good">Router Sikka: only 11–133 partners affected — <strong>not a driver</strong></li>
+        <li class="bad">Even Consistent bonus earners dropped 6.5pp. <strong>The issue is systemic.</strong></li>
+      </ul>
+    </div>
+
+  </div>
+
+  <!-- Conclusion -->
+  <div class="conclusion-box">
+    <div class="ct">Conclusion</div>
+    <p>Recovery decline is <strong>not concentrated in any segment</strong> — it cuts across size, city, tenure, and bonus performance cohort. Even top-performing partners are declining. This points to a <strong>systemic operational or process change</strong> between Jan and Feb 2026. Next step: RCA at the ticket level — what changed in Feb?</p>
+  </div>
+
+  <!-- Jump links -->
+  <div class="jump-links">
+    <span>Jump to:</span>
+    <a class="jump-link" href="#ch1">The Signal</a>
+    <a class="jump-link" href="#ch2">Partner Status Split</a>
+    <a class="jump-link" href="#ch3">Cohort Analysis</a>
+    <a class="jump-link" href="#ch4">Declining Partners Deep Dive</a>
+    <a class="jump-link" href="#ch5">Router Sikka</a>
+    <a class="jump-link" href="#ch-next">RCA — What's Next</a>
+  </div>
+
+</div><!-- /summary-panel -->
+
+<!-- ============================================================ -->
+<!--  DETAIL SECTIONS                                              -->
+<!-- ============================================================ -->
+<div class="container">
+  <div class="detail-label">Detailed Analysis</div>
+
+<div class="chapter" id="ch1">
+  <div class="chapter-header">
+    <span class="chapter-num">Chapter 1</span>
+    <h2>The Signal — Router Recovery is Declining</h2>
+  </div>
+  <div class="chapter-body">
+    <div class="signal-box">
+      <strong>PUT recovery rate fell 5.1pp from Jan to Feb 2026</strong> — 63.8% to 58.7%. March 1–16 cohort (21-day window expired) reads at 58.2%, in line with February. No recovery yet as of Apr 7, 2026.
+    </div>
+
+    <h3>View 1 — Window-Complete Cohorts Only</h3>
+    <p style="font-size:12px;color:#666;margin-bottom:8px;">Jan and Feb are fully closed (&lt;0.3% open). Mar row = tickets created Mar 1–16 whose 21-day window has now passed.</p>
+    <table>
+      <thead><tr>
+        <th>Creation Month</th><th>Total Tickets</th><th>Recovered (Score=1)</th><th>Failed (Score=0)</th><th>Open / Overdue</th><th>Recovery %</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>Jan 2026</td><td>21,079</td><td>13,454</td><td>7,576</td><td>49</td><td class="warn">63.8%</td></tr>
+        <tr><td>Feb 2026</td><td>19,908</td><td>11,682</td><td>8,203</td><td>23</td><td class="bad">58.7%</td></tr>
+        <tr><td>Mar 2026 (1–16 only)</td><td>11,963</td><td>6,957</td><td>4,953</td><td>53</td><td class="bad">58.2%</td></tr>
+      </tbody>
+    </table>
+
+    <h3>View 2 — All Tickets Created Till Date (including open)</h3>
+    <p style="font-size:12px;color:#666;margin-bottom:8px;">5,756 March tickets (created Mar 17+) are within the 21-day window — partners still have time. Only 53 are genuinely overdue. "Recov % of closed" for March is skewed upward by fast-closing Mar 17+ tickets; use View 1 (58.2%) as the comparable March read.</p>
+    <table>
+      <thead><tr>
+        <th>Creation Month</th><th>Total Created</th><th>Recovered</th><th>Failed</th><th>Still Open</th><th>Open %</th><th>Recov % (of total)</th><th>Recov % (of closed)</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>Jan 2026</td><td>21,079</td><td>13,454</td><td>7,576</td><td>49</td><td>0.2%</td><td class="warn">63.8%</td><td class="warn">64.0%</td></tr>
+        <tr><td>Feb 2026</td><td>19,908</td><td>11,682</td><td>8,203</td><td>23</td><td>0.1%</td><td class="bad">58.7%</td><td class="bad">58.8%</td></tr>
+        <tr><td>Mar 2026 (partial)</td><td>22,372</td><td>11,121</td><td>5,442</td><td>5,809</td><td class="warn">26.0%</td><td class="bad">49.7%</td><td class="warn">67.1%*</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:12px;color:#888;margin-top:6px;">* Mar "Recov % of closed" (67.1%) is inflated — fast-closing Mar 17–31 tickets are over-represented. Use View 1 (58.2%) for the apples-to-apples March read.</p>
+
+    <div class="verdict">
+      <div class="v-title">Signal</div>
+      <p>Jan to Feb drop of <strong>5.1pp</strong> (63.8% to 58.7%). Mar 1–16 cohort at <strong>58.2%</strong> — no sign of recovery as of Apr 7, 2026.</p>
+    </div>
+  </div>
+  <div class="chapter-footer">Source: PROD_DB.DYNAMODB_READ.TASKS (no filter) LEFT JOIN PROD_DB.DYNAMODB.TASK_PERFORMANCE on TASKS.ID = TASK_PERFORMANCE.REPORTERID | Recovery = SCORE=1 | Grouped by ticket creation month | Data as of Apr 7, 2026</div>
+</div>
+
+<!-- ======================================================= -->
+<!-- ======================================================= -->
+<div class="chapter" id="ch2">
+  <div class="chapter-header">
+    <span class="chapter-num">Chapter 2</span>
+    <h2>Who Owns the Problem? Partner Status Bifurcation</h2>
+  </div>
+  <div class="chapter-body">
+    <p>All PUT tickets split by partner's current status (SUPPLY_MODEL). Recovery % = Score=1 tickets / total created that month.</p>
+    <table>
+      <thead><tr>
+        <th>Partner Status</th>
+        <th>Jan — Tickets</th><th>Jan — Recov%</th>
+        <th>Feb — Tickets</th><th>Feb — Recov%</th>
+        <th>Mar 1-16 — Tickets</th><th>Mar — Recov%</th>
+        <th>Jan to Mar chg</th>
+      </tr></thead>
+      <tbody>
+        <tr><td class="label">ACTIVE</td><td>20,094</td><td class="warn">65.5%</td><td>19,276</td><td class="bad">59.8%</td><td>11,580</td><td class="bad">59.5%</td><td class="bad">−6.0pp</td></tr>
+        <tr><td class="label">TERMINATION</td><td>738</td><td class="bad">24.3%</td><td>424</td><td class="bad">22.9%</td><td>257</td><td class="bad">17.9%</td><td class="bad">−6.4pp</td></tr>
+        <tr><td class="label">TEMP SUSPENSION</td><td>230</td><td class="bad">44.3%</td><td>186</td><td class="bad">29.6%</td><td>121</td><td class="bad">15.7%</td><td class="bad">−28.6pp</td></tr>
+        <tr><td class="label">CLOSED / BLACKLISTED</td><td>7</td><td class="bad">0.0%</td><td>3</td><td class="neutral">—</td><td>2</td><td class="neutral">—</td><td class="neutral">Negligible volume</td></tr>
+      </tbody>
+    </table>
+    <div class="verdict">
+      <div class="v-title">Verdict</div>
+      <p><strong>Active partners own 95–97% of all PUT ticket volume.</strong> Termination and Suspension partners are shrinking in both count and recovery rate, but their combined ticket share is under 5%. The recovery decline is an <strong>Active partner problem</strong>. All further analysis focuses on Active partners.</p>
+    </div>
+  </div>
+  <div class="chapter-footer">Source: Same join as Chapter 1 (TASKS + TASK_PERFORMANCE SCORE) + SUPPLY_MODEL (PARTNER_STATUS) | Data as of Apr 7, 2026</div>
+</div>
+
+<!-- ======================================================= -->
+<!-- ======================================================= -->
+<div class="chapter" id="ch3">
+  <div class="chapter-header">
+    <span class="chapter-num">Chapter 3</span>
+    <h2>Is This a Specific Partner Cohort Problem?</h2>
+  </div>
+  <div class="chapter-body">
+
+    <h3>Step 1 — Overall Ticket Recovery Trend</h3>
+    <p style="font-size:13px;color:#555;margin-bottom:8px;">All partners, all statuses. Same numbers as Chapter 1 — shown here as baseline before cohort cuts.</p>
+    <table>
+      <thead><tr>
+        <th>Creation Month</th><th>Total Tickets</th><th>Recovered (Score=1)</th><th>Failed (Score=0)</th><th>Recovery Rate</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>Jan 2026</td><td>21,079</td><td>13,454</td><td>7,576</td><td class="warn">63.8%</td></tr>
+        <tr><td>Feb 2026</td><td>19,908</td><td>11,682</td><td>8,203</td><td class="bad">58.7%</td></tr>
+        <tr><td>Mar 2026 (1–16)</td><td>11,963</td><td>6,957</td><td>4,953</td><td class="bad">58.2%</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Step 2 — Breakdown by Partner Dimension</h3>
+    <p style="font-size:13px;color:#555;margin-bottom:14px;">Recovery % = Score=1 / total tickets created, by month. All views use the same data source as Chapter 1.</p>
+
+    <div style="margin:16px 0;">
+
+      <div style="background:#f8fafd;border:1px solid #dde8f5;border-radius:8px;padding:16px 20px;margin-bottom:12px;">
+        <div style="font-weight:700;color:#1F4E79;margin-bottom:10px;">View 1 — By Customer Base Size</div>
+        <table style="margin:0;">
+          <thead><tr>
+            <th>Segment</th><th>Partners</th>
+            <th>Jan — Tickets</th><th>Jan — Recov%</th>
+            <th>Feb — Tickets</th><th>Feb — Recov%</th>
+            <th>Mar 1-16 — Tickets</th><th>Mar — Recov%</th>
+            <th>Jan to Mar</th>
+          </tr></thead>
+          <tbody>
+            <tr><td class="label">Large (&gt;150 customers)</td><td>106</td><td>4,468</td><td class="good">73.1%</td><td>4,409</td><td class="good">69.7%</td><td>2,797</td><td class="good">70.8%</td><td class="warn">−2.3pp</td></tr>
+            <tr><td class="label">Mega (&gt;300 customers)</td><td>17</td><td>1,074</td><td class="warn">66.4%</td><td>1,060</td><td class="warn">60.5%</td><td>568</td><td class="warn">61.1%</td><td class="bad">−5.3pp</td></tr>
+            <tr><td class="label">Mid-Size (50–150)</td><td>315</td><td>7,685</td><td class="warn">67.2%</td><td>7,411</td><td class="warn">60.1%</td><td>4,526</td><td class="warn">61.0%</td><td class="bad">−6.2pp</td></tr>
+            <tr><td class="label">Small (&lt;50 customers)</td><td>772</td><td>7,696</td><td class="warn">55.7%</td><td>6,957</td><td class="bad">50.3%</td><td>4,046</td><td class="bad">46.2%</td><td class="bad">−9.5pp</td></tr>
+            <tr><td class="label">No Customers</td><td>61</td><td>146</td><td class="bad">15.1%</td><td>52</td><td class="bad">17.3%</td><td>23</td><td class="bad">8.7%</td><td class="neutral">Low volume — volatile</td></tr>
+          </tbody>
+        </table>
+        <div class="insight" style="margin-top:10px;"><span class="insight-icon">→</span><p><strong>Small partners show the steepest decline</strong> (55.7% to 46.2%, −9.5pp) and hold the most tickets (~36%). Large partners are largely stable at 70–73%. Size is the strongest signal so far.</p></div>
+      </div>
+
+      <div style="background:#f8fafd;border:1px solid #dde8f5;border-radius:8px;padding:16px 20px;margin-bottom:12px;">
+        <div style="font-weight:700;color:#1F4E79;margin-bottom:10px;">View 2 — By City</div>
+        <table style="margin:0;">
+          <thead><tr>
+            <th>City</th><th>Partners</th>
+            <th>Jan — Tickets</th><th>Jan — Recov%</th>
+            <th>Feb — Tickets</th><th>Feb — Recov%</th>
+            <th>Mar 1-16 — Tickets</th><th>Mar — Recov%</th>
+            <th>Jan to Mar</th>
+          </tr></thead>
+          <tbody>
+            <tr><td class="label">Delhi</td><td>911</td><td>16,618</td><td class="warn">65.2%</td><td>15,939</td><td class="warn">60.2%</td><td>9,800</td><td class="bad">59.9%</td><td class="bad">−5.3pp</td></tr>
+            <tr><td class="label">Mumbai</td><td>171</td><td>1,740</td><td class="bad">58.9%</td><td>1,589</td><td class="bad">57.1%</td><td>817</td><td class="bad">53.5%</td><td class="bad">−5.4pp</td></tr>
+            <tr><td class="label">Bharat</td><td>192</td><td>2,721</td><td class="bad">58.5%</td><td>2,380</td><td class="bad">49.2%</td><td>1,346</td><td class="bad">48.0%</td><td class="bad">−10.5pp</td></tr>
+          </tbody>
+        </table>
+        <div class="insight" style="margin-top:10px;"><span class="insight-icon">→</span><p>Bharat declining fastest (−10.5pp) but most Bharat partners are Small — the size and city signals overlap. Delhi holds 79% of all tickets and is down 5.3pp — <strong>Delhi's absolute volume makes it the primary driver of the overall decline.</strong></p></div>
+      </div>
+
+      <div style="background:#f8fafd;border:1px solid #dde8f5;border-radius:8px;padding:16px 20px;margin-bottom:12px;">
+        <div style="font-weight:700;color:#1F4E79;margin-bottom:10px;">View 3 — By Partner Tenure</div>
+        <table style="margin:0;">
+          <thead><tr>
+            <th>Tenure</th><th>Partners</th>
+            <th>Jan — Recov%</th><th>Feb — Recov%</th><th>Mar 1-16 — Recov%</th>
+            <th>Jan to Mar</th>
+          </tr></thead>
+          <tbody>
+            <tr><td class="label">Legacy (4+ yr)</td><td>650</td><td class="warn">66.4%</td><td class="warn">61.0%</td><td class="warn">61.7%</td><td class="bad">−4.7pp</td></tr>
+            <tr><td class="label">Seasoned (2–3 yr)</td><td>215</td><td class="warn">63.1%</td><td class="bad">57.8%</td><td class="bad">55.0%</td><td class="bad">−8.1pp</td></tr>
+            <tr><td class="label">Mature (3–4 yr)</td><td>236</td><td class="bad">59.3%</td><td class="bad">53.5%</td><td class="bad">51.2%</td><td class="bad">−8.1pp</td></tr>
+            <tr><td class="label">Established (1–2 yr)</td><td>158</td><td class="bad">58.8%</td><td class="bad">53.6%</td><td class="bad">50.0%</td><td class="bad">−8.8pp</td></tr>
+            <tr><td class="label">Early (&lt;6 months)</td><td>12–24</td><td class="bad">46.4%</td><td class="good">76.2%</td><td class="good">80.2%</td><td class="neutral">Low volume — volatile</td></tr>
+          </tbody>
+        </table>
+        <div class="insight" style="margin-top:10px;"><span class="insight-icon">→</span><p>All tenure buckets declining. Established, Mature, and Seasoned partners show −8 to −9pp drops. Legacy partners (largest group, 650 partners) are declining least. <strong>No tenure bucket is immune — decline is broad-based.</strong></p></div>
+      </div>
+
+      <div style="background:#f8fafd;border:1px solid #dde8f5;border-radius:8px;padding:16px 20px;">
+        <div style="font-weight:700;color:#1F4E79;margin-bottom:10px;">View 4 — By Device Bonus Earning Cohort</div>
+        <p style="font-size:13px;color:#555;margin-bottom:10px;">Partners classified by Nov–Mar device bonus earning pattern (from V2_WORK_DEVICE_BONUS). Recovery % from same TASKS+TASK_PERFORMANCE source.</p>
+        <table style="margin:0;">
+          <thead><tr>
+            <th>Cohort</th><th>Partners</th>
+            <th>Jan — Tickets</th><th>Jan — Recov%</th>
+            <th>Feb — Tickets</th><th>Feb — Recov%</th>
+            <th>Mar 1-16 — Tickets</th><th>Mar — Recov%</th>
+            <th>Jan to Mar</th>
+          </tr></thead>
+          <tbody>
+            <tr><td class="label">Consistent (earned all 5 months)</td><td>358</td><td>7,566</td><td class="good">90.9%</td><td>7,513</td><td class="good">86.0%</td><td>4,568</td><td class="good">84.5%</td><td class="bad">−6.5pp</td></tr>
+            <tr><td class="label">Improving (started earning recently)</td><td>85</td><td>825</td><td class="good">90.9%</td><td>889</td><td class="warn">74.1%</td><td>535</td><td class="warn">71.8%</td><td class="bad">−19.1pp</td></tr>
+            <tr><td class="label">Strong (earned 4 of 5 months)</td><td>133</td><td>1,656</td><td class="warn">77.9%</td><td>1,487</td><td class="warn">72.2%</td><td>923</td><td class="warn">67.3%</td><td class="bad">−10.6pp</td></tr>
+            <tr><td class="label">Inconsistent (earned 1–3 months)</td><td>240</td><td>2,864</td><td class="bad">55.4%</td><td>2,578</td><td class="bad">45.3%</td><td>1,468</td><td class="bad">47.0%</td><td class="bad">−8.4pp</td></tr>
+            <tr><td class="label">Declining (stopped earning)</td><td>89</td><td>1,151</td><td class="bad">39.8%</td><td>1,044</td><td class="bad">37.5%</td><td>583</td><td class="bad">42.7%</td><td class="good">+2.9pp</td></tr>
+            <tr><td class="label">Never Earned (0 of 5 months)</td><td>290</td><td>6,032</td><td class="bad">36.5%</td><td>5,762</td><td class="bad">30.7%</td><td>3,503</td><td class="bad">31.1%</td><td class="bad">−5.4pp</td></tr>
+          </tbody>
+        </table>
+        <div class="insight" style="margin-top:10px;"><span class="insight-icon">→</span><p><strong>Every cohort declining except "Declining" (which barely improved +2.9pp from an already-low base).</strong> "Improving" partners crashed hardest (−19.1pp). Even "Consistent" earners — who recover 85–91% of devices — fell 6.5pp. The decline is not explained by partner quality.</p></div>
+      </div>
+
+    </div>
+
+    <h3>Conclusion — The Problem is Systemic</h3>
+    <div class="verdict" style="background:#FFF3CD;border-color:#FFC107;">
+      <div class="v-title" style="color:#7f6000;">Finding</div>
+      <ul style="font-size:13.5px;color:#444;margin-left:18px;line-height:2;">
+        <li><strong>Small partners</strong> (36% of tickets) show the steepest decline: 55.7% to 46.2% (−9.5pp).</li>
+        <li><strong>Bharat</strong> declines fastest (−10.5pp) but overlaps with Small — likely the same root cause.</li>
+        <li>All <strong>tenure buckets</strong> declining — no group is insulated.</li>
+        <li>Even <strong>Consistent bonus earners</strong> (top performers, 90%+ recovery) dropped 6.5pp — ruling out partner motivation or capability as the cause.</li>
+        <li>The decline is <strong>systemic</strong> — something changed at the operational or process level between Jan and Feb 2026.</li>
+      </ul>
+    </div>
+
+  </div>
+  <div class="chapter-footer">Source: Same join as Chapter 1 (TASKS + TASK_PERFORMANCE SCORE) + SUPPLY_MODEL for dimensions | Cohort labels from V2_WORK_DEVICE_BONUS (Nov–Mar bonus earning pattern) | Data as of Apr 7, 2026</div>
+</div>
+
+<!-- ======================================================= -->
+<!-- ======================================================= -->
+<div class="chapter" id="ch4">
+  <div class="chapter-header">
+    <span class="chapter-num">Chapter 4</span>
+    <h2>Declining Partners — Deep Dive (89 Partners)</h2>
+  </div>
+  <div class="chapter-body">
+    <div class="signal-box">
+      <strong>89 partners who earned device bonus Nov–Jan but stopped in Feb–Mar.</strong> Their PUT recovery rate (39.8% in Jan) was already well below the 63.8% overall. Service SLA also falling. Both dimensions declining together points to a broad operational issue, not just PUT avoidance.
+    </div>
+
+    <h3>Ticket Volume and Recovery — Declining Partners vs Overall</h3>
+    <table class="declined-table">
+      <thead><tr>
+        <th>Creation Month</th>
+        <th>Overall — Tickets</th><th>Overall — Recov%</th>
+        <th>Declining — Tickets</th><th>Declining — % of Total</th><th>Declining — Recov%</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>Jan 2026</td><td>21,079</td><td class="warn">63.8%</td><td>1,151</td><td>5.5%</td><td class="bad">39.8%</td></tr>
+        <tr><td>Feb 2026</td><td>19,908</td><td class="bad">58.7%</td><td>1,044</td><td>5.2%</td><td class="bad">37.5%</td></tr>
+        <tr><td>Mar 2026 (1–16)</td><td>11,963</td><td class="bad">58.2%</td><td>583</td><td>4.9%</td><td class="bad">42.7%</td></tr>
+      </tbody>
+    </table>
+    <div class="insight"><span class="insight-icon">→</span><p>Declining partners hold only ~5% of tickets. Their rate (37–43%) is low but they cannot account for the overall 5.1pp decline — their contribution is too small. The systemic issue lies in the broader active partner base.</p></div>
+
+    <h3>Service Bonus Trend — Declining Partners vs All Active</h3>
+    <table>
+      <thead><tr>
+        <th>Payout Month (Perf = month−1)</th>
+        <th>Declining Partners in System</th>
+        <th>Avg Service SLA (Declining)</th>
+        <th>Avg Service SLA (All Active)</th>
+        <th>Avg Work Bonus (Declining)</th>
+        <th>Avg Work Bonus (All Active)</th>
+        <th>Earning Work Bonus (of 89)</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>Jul 2025 (Jun perf)</td><td>59</td><td class="good">81.5%</td><td>80.5%</td><td>Rs 1,393</td><td>Rs 1,849</td><td>36</td></tr>
+        <tr><td>Aug 2025 (Jul perf)</td><td>73</td><td>79.6%</td><td>80.9%</td><td>Rs 1,337</td><td>Rs 1,930</td><td>42</td></tr>
+        <tr><td>Sep 2025 (Aug perf)</td><td>79</td><td>77.7%</td><td>81.3%</td><td>Rs 1,439</td><td>Rs 2,259</td><td>46</td></tr>
+        <tr><td>Oct 2025 (Sep perf)</td><td>82</td><td>80.8%</td><td>82.1%</td><td>Rs 1,552</td><td>Rs 2,250</td><td>54</td></tr>
+        <tr><td>Nov 2025 (Oct perf)</td><td>86</td><td class="warn">76.2%</td><td>74.4%</td><td>Rs 1,500</td><td>Rs 2,383</td><td>48</td></tr>
+        <tr><td>Dec 2025 (Nov perf)</td><td>88</td><td class="warn">77.4%</td><td>75.6%</td><td>Rs 1,676</td><td>Rs 2,352</td><td>58</td></tr>
+        <tr><td>Jan 2026 (Dec perf)</td><td>88</td><td class="warn">75.0%</td><td>75.7%</td><td>Rs 1,471</td><td>Rs 2,566</td><td>49</td></tr>
+        <tr><td>Feb 2026 (Jan perf)</td><td>83</td><td class="bad">71.0%</td><td>75.1%</td><td>Rs 1,367</td><td>Rs 2,640</td><td>36</td></tr>
+        <tr><td>Mar 2026 (Feb perf)</td><td>84</td><td class="bad">63.4%</td><td>72.8%</td><td>Rs 757</td><td>Rs 1,962</td><td>23</td></tr>
+      </tbody>
+    </table>
+    <div class="insight"><span class="insight-icon">→</span><p>Service SLA dropped from 81.5% to 63.4%. Work bonus more than halved (Rs 1,393 to Rs 757). <strong>Both service and device performance falling together</strong> — broader operational breakdown, not just device avoidance.</p></div>
+
+    <h3>Partner Profile — Declining vs Rest of Active</h3>
+    <div class="two-col">
+      <table>
+        <thead><tr><th>Metric</th><th>Declining (89)</th><th>Other Active (1,106)</th></tr></thead>
+        <tbody>
+          <tr><td class="label">Avg Active Customers</td><td class="bad">66</td><td class="good">109</td></tr>
+          <tr><td class="label">Avg Rohits (Current)</td><td>2.25</td><td>2.53</td></tr>
+          <tr><td class="label">Avg Service Rating</td><td class="warn">3.96</td><td class="good">4.08</td></tr>
+          <tr><td class="label">Avg Total Installs</td><td class="bad">189</td><td class="good">303</td></tr>
+          <tr><td class="label">Installs Last 30 Days</td><td class="bad">125</td><td class="good">197</td></tr>
+        </tbody>
+      </table>
+      <div>
+        <h3>Composition</h3>
+        <table>
+          <thead><tr><th>Dimension</th><th>Breakdown</th></tr></thead>
+          <tbody>
+            <tr><td class="label">By Size</td><td class="label">Small 76% · Mid 11% · Large 6% · No Cx 7%</td></tr>
+            <tr><td class="label">By City</td><td class="label">Delhi 55% · Mumbai 22% · Bharat 22%</td></tr>
+            <tr><td class="label">By Tenure</td><td class="label">Legacy 32 · Mature 26 · Established 22 · Seasoned 9</td></tr>
+          </tbody>
+        </table>
+        <div class="verdict" style="margin-top:14px;">
+          <div class="v-title">Key Observation</div>
+          <p>Declining partners are smaller (66 avg customers vs 109) with fewer installs — but <strong>similar Rohit count</strong> (2.25 vs 2.53). Not a capacity gap. Decline across both service and device recovery suggests a <strong>behavioral or motivational shift</strong>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="chapter-footer">Source: TASKS + TASK_PERFORMANCE SCORE (ticket recovery data) | V2_WORK_DEVICE_BONUS (service SLA, work bonus amounts) | SUPPLY_MODEL (partner profile) | Data as of Apr 7, 2026</div>
+</div>
+
+<!-- ======================================================= -->
+<!-- ======================================================= -->
+<div class="chapter" id="ch5">
+  <div class="chapter-header">
+    <span class="chapter-num">Chapter 5</span>
+    <h2>Router Sikka Feature — Ruled Out as Driver</h2>
+  </div>
+  <div class="chapter-body">
+    <p><strong>Router Sikka</strong> is a feature that allows partners whose 1-month or 3-month device recovery rate is below 80% to still earn their device bonus — if they complete a defined set of recovery tickets surfaced to them in the Sikka interface. The backend marker for this is <code>routerPickupBonusBlocked: score_eligible=True</code> in T_TRANSACTIONS.EXTRA_DATA.</p>
+
+    <div class="grid-3">
+      <div class="stat-card"><div class="num orange">133</div><div class="lbl">Partners via Sikka route<br>Dec 2025 performance<br>(feature launch month)</div></div>
+      <div class="stat-card"><div class="num warn">20</div><div class="lbl">Partners via Sikka route<br>Jan 2026 performance</div></div>
+      <div class="stat-card"><div class="num green">11</div><div class="lbl">Partners via Sikka route<br>Feb 2026 performance</div></div>
+    </div>
+
+    <table>
+      <thead><tr><th>Performance Month</th><th>Total Earners</th><th>Path 1 — Direct (dp ≥ 80%)</th><th>Path 2 — Router Sikka</th><th>Sikka % of Earners</th><th>Avg dp1 (Sikka partners)</th></tr></thead>
+      <tbody>
+        <tr><td>Oct 2025</td><td>646</td><td>645</td><td>0</td><td>—</td><td>— (feature not live)</td></tr>
+        <tr><td>Nov 2025</td><td>719</td><td>719</td><td>0</td><td>—</td><td>— (feature not live)</td></tr>
+        <tr><td>Dec 2025</td><td>844</td><td>710</td><td class="bad">133</td><td class="bad">15.8%</td><td class="bad">49.7%</td></tr>
+        <tr><td>Jan 2026</td><td>699</td><td>679</td><td class="warn">20</td><td class="warn">2.9%</td><td class="warn">67.8%</td></tr>
+        <tr><td>Feb 2026</td><td>648</td><td>634</td><td class="good">11</td><td class="good">1.7%</td><td class="warn">61.3%</td></tr>
+      </tbody>
+    </table>
+
+    <div class="verdict">
+      <div class="v-title">Ruled Out</div>
+      <p>The Sikka route is active for at most 133 partners in a month (Dec launch spike) and declining fast to 11 by Feb. With 1,195 active partners and a 9pp overall recovery decline, <strong>Sikka is not a meaningful driver of the trend</strong>. The Dec spike was a one-time backlog of borderline partners being flagged for the first time when the feature went live. Post-launch counts are negligible.</p>
+    </div>
+  </div>
+  <div class="chapter-footer">Source: PROD_DB.DYNAMODB.T_TRANSACTIONS.EXTRA_DATA — TRANSACTION_TYPE = 'DEVICE_INCENTIVE'</div>
+</div>
+
+<!-- ======================================================= -->
+<div class="chapter" id="ch-next">
+  <div class="chapter-header">
+    <span class="chapter-num">Next</span>
+    <h2>Open Questions — Where to Dig Next</h2>
+  </div>
+  <div class="chapter-body">
+    <table>
+      <thead><tr><th>#</th><th>Question</th><th>Why it matters</th><th>Priority</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td class="label"><strong>Failure reason for declining partners' tickets</strong> — are they attempting and failing, or not attempting at all?</td>
+          <td class="label neutral">Ticket count didn't drop (975 → 1,179) but success rate crashed (52% → 21%). Are they marking GENERAL without attempting?</td>
+          <td><span class="tag tag-dig">High</span></td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td class="label"><strong>What happened in Dec 2025?</strong> — it was uniformly bad for everyone (31% success), then most recovered but declining partners didn't</td>
+          <td class="label neutral">Dec appears to be the inflection point. External event? Policy change? Seasonal?</td>
+          <td><span class="tag tag-dig">High</span></td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td class="label"><strong>Rohit availability over time</strong> — has the declining partners' Rohit count changed since they were earning?</td>
+          <td class="label neutral">Current snapshot shows 2.25 Rohits avg — but was it higher before? Rohit attrition could explain the operational decline across both service and recovery.</td>
+          <td><span class="tag tag-dig">High</span></td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td class="label"><strong>Customer base change</strong> — did declining partners lose customers or have them migrated away?</td>
+          <td class="label neutral">Fewer customers = fewer recovery events, but also less incentive to invest in the process. 66 avg customers is already very small.</td>
+          <td><span class="tag tag-watch">Medium</span></td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td class="label"><strong>Never Earned cohort intervention</strong> — are these 290 partners expected to recover devices? Who owns them?</td>
+          <td class="label neutral">Chronically at 41% for 5 months. Not a recent decline but a systemic gap. Separate BDM action needed.</td>
+          <td><span class="tag tag-watch">Medium (separate track)</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+</div><!-- /container -->
+</body>
+</html>
