@@ -48,6 +48,8 @@ WITH cte1 AS (
 """
 
 # ---------- Q1: MoM creation-basis recovery ----------
+# 21-day rule: only include tickets whose recovery window has fully expired
+# (CREATED at least 21 days ago). Avoids skew from fresh tickets still in progress.
 Q1 = TASKS_CTE + """
 SELECT
     TO_CHAR(DATE_TRUNC('month', DATEADD(minute,330,CREATED)),'YYYY-MM') AS month,
@@ -57,7 +59,7 @@ SELECT
     SUM(CASE WHEN STATUS IN (0,1) THEN 1 ELSE 0 END) AS open_tickets
 FROM cte1
 WHERE rn = 1
-  AND TO_DATE(DATEADD(minute,330,CREATED)) BETWEEN '2025-11-01' AND CURRENT_DATE
+  AND TO_DATE(DATEADD(minute,330,CREATED)) BETWEEN '2025-11-01' AND DATEADD(day, -21, CURRENT_DATE)
 GROUP BY 1
 ORDER BY 1
 LIMIT 10000
@@ -150,7 +152,6 @@ HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Router Recovery — Live Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; color: #1a1a2e; line-height: 1.5; }
@@ -159,10 +160,14 @@ HTML = """<!DOCTYPE html>
   .header p  { font-size: 12px; opacity: 0.85; margin-top: 4px; }
   .container { max-width: 1200px; margin: 0 auto; padding: 28px 24px; }
   .card { background: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); padding: 22px 26px; margin-bottom: 22px; }
-  .card h2 { font-size: 15px; font-weight: 700; color: #1F4E79; margin-bottom: 4px; }
-  .card .sub { font-size: 12px; color: #777; margin-bottom: 8px; }
-  .logic { font-size: 11px; color: #555; background: #f4f7fb; border-left: 3px solid #2E75B6; padding: 8px 12px; margin-bottom: 14px; border-radius: 3px; font-family: 'Consolas','Courier New',monospace; line-height: 1.5; }
-  .logic b { color: #1F4E79; font-family: 'Segoe UI', Arial, sans-serif; }
+  .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .card h2 { font-size: 15px; font-weight: 700; color: #1F4E79; }
+  .card .sub { font-size: 12px; color: #777; margin-bottom: 14px; }
+  .src-wrap { position: relative; display: inline-block; }
+  .src-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: #2E75B6; color: white; font-size: 11px; font-weight: 700; cursor: help; user-select: none; }
+  .src-tip { display: none; position: absolute; top: 24px; left: 0; z-index: 100; min-width: 460px; font-size: 11px; color: #333; background: white; border: 1px solid #BDD7EE; box-shadow: 0 4px 14px rgba(0,0,0,0.12); padding: 10px 14px; border-radius: 5px; font-family: 'Consolas','Courier New',monospace; line-height: 1.55; }
+  .src-tip b { color: #1F4E79; font-family: 'Segoe UI', Arial, sans-serif; }
+  .src-wrap:hover .src-tip { display: block; }
   .chart-wrap { position: relative; height: 340px; }
   .chart-wrap.tall { height: 380px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
@@ -182,56 +187,78 @@ HTML = """<!DOCTYPE html>
 <div class="container">
 
   <div class="card">
-    <h2>1. Monthly Recovery Rate — creation month basis</h2>
-    <div class="sub">Denominator: closed tickets (recovered + failed) created that month. Latest months have 21-day cohort lag.</div>
-    <div class="logic">
-      <b>Table:</b> PROD_DB.DYNAMODB_READ.TASKS (deduped by ID, latest row)<br>
-      <b>Filter:</b> TYPE = 'ROUTER_PICKUP' &nbsp;|&nbsp; CREATED (IST) between 2025-11-01 and today<br>
-      <b>Month:</b> DATE_TRUNC('month', CREATED + 330 min IST)<br>
-      <b>Recovered:</b> STATUS = 2 &nbsp;|&nbsp; <b>Failed:</b> STATUS = 3 &nbsp;|&nbsp; <b>Open:</b> STATUS IN (0, 1)<br>
-      <b>Rate:</b> recovered ÷ (recovered + failed)
+    <div class="card-head">
+      <h2>1. Monthly Success Rate — creation month basis</h2>
+      <span class="src-wrap"><span class="src-icon">i</span>
+        <div class="src-tip">
+          <b>Table:</b> PROD_DB.DYNAMODB_READ.TASKS (deduped by ID, latest row)<br>
+          <b>Filter:</b> TYPE = 'ROUTER_PICKUP'<br>
+          <b>21-day rule:</b> CREATED (IST) between 2025-11-01 and (today − 21 days). Only tickets whose recovery window has fully expired are included.<br>
+          <b>Month:</b> DATE_TRUNC('month', CREATED + 330 min IST)<br>
+          <b>Successfully Closed:</b> STATUS = 2<br>
+          <b>Unsuccessfully Closed:</b> STATUS = 3<br>
+          <b>Open:</b> STATUS IN (0, 1)<br>
+          <b>Rate:</b> Success ÷ Total Closed
+        </div>
+      </span>
     </div>
+    <div class="sub">Only tickets created ≥21 days ago (full recovery window expired). Prevents skew from fresh tickets still in progress.</div>
     <div class="chart-wrap"><canvas id="momChart"></canvas></div>
     <table id="momTable"></table>
   </div>
 
   <div class="card">
-    <h2>2. Week-on-Week — 7-day rolling avg daily recovery rate</h2>
-    <div class="sub">Smoothed daily recovery %. Resolution-date basis. No cohort lag — shows operational performance in near-real-time.</div>
-    <div class="logic">
-      <b>Tables:</b> PROD_DB.DYNAMODB.TASK_PERFORMANCE (tp) LEFT JOIN PROD_DB.DYNAMODB_READ.TASKS (deduped) ON tp.REPORTERID = TASKS.ID<br>
-      <b>Filter:</b> tp.TASK_TYPE = 'ROUTER_PICKUP' &nbsp;|&nbsp; tp._FIVETRAN_DELETED = false &nbsp;|&nbsp; tp.TASK_RESOLVED_TIME NOT NULL<br>
-      <b>Date:</b> tp.TASK_RESOLVED_TIME (+ 330 min IST) &nbsp;|&nbsp; range: 2025-11-01 → today<br>
-      <b>Recovered:</b> TASKS.STATUS = 2 &nbsp;|&nbsp; <b>Denominator:</b> all tp rows resolved that day<br>
-      <b>Rolling:</b> 7-day trailing sum(recovered) ÷ sum(total_resolved)
+    <div class="card-head">
+      <h2>2. Week-on-Week — 7-day rolling Success / Total Closed</h2>
+      <span class="src-wrap"><span class="src-icon">i</span>
+        <div class="src-tip">
+          <b>Tables:</b> PROD_DB.DYNAMODB.TASK_PERFORMANCE (tp) LEFT JOIN PROD_DB.DYNAMODB_READ.TASKS (deduped) ON tp.REPORTERID = TASKS.ID<br>
+          <b>Filter:</b> tp.TASK_TYPE = 'ROUTER_PICKUP' &nbsp;|&nbsp; tp._FIVETRAN_DELETED = false &nbsp;|&nbsp; tp.TASK_RESOLVED_TIME NOT NULL<br>
+          <b>Date:</b> tp.TASK_RESOLVED_TIME (+ 330 min IST), range 2025-11-01 → today<br>
+          <b>Successfully Closed:</b> TASKS.STATUS = 2<br>
+          <b>Total Closed:</b> all tp rows resolved that day<br>
+          <b>Rolling:</b> 7-day trailing sum(Success) ÷ sum(Total Closed)
+        </div>
+      </span>
     </div>
+    <div class="sub">Smoothed daily rate. Resolution-date basis — no cohort lag, shows operational performance in near-real-time.</div>
     <div class="chart-wrap tall"><canvas id="rollingChart"></canvas></div>
   </div>
 
   <div class="card">
-    <h2>3. Day-on-Day — raw daily recovery rate</h2>
-    <div class="sub">Of all tickets closed that day, what % had STATUS = 2. Noisy but earliest signal.</div>
-    <div class="logic">
-      <b>Tables / filter / date:</b> same as View 2 above (TASK_PERFORMANCE ⟕ TASKS, resolution date)<br>
-      <b>Rate:</b> (rows where TASKS.STATUS = 2) ÷ (all rows resolved that day) — no smoothing
+    <div class="card-head">
+      <h2>3. Day-on-Day — Success / Total Closed</h2>
+      <span class="src-wrap"><span class="src-icon">i</span>
+        <div class="src-tip">
+          <b>Tables / filter / date:</b> same as View 2 (TASK_PERFORMANCE ⟕ TASKS, resolution date)<br>
+          <b>Rate:</b> (rows where TASKS.STATUS = 2) ÷ (all rows resolved that day) — no smoothing
+        </div>
+      </span>
     </div>
+    <div class="sub">Of all tickets closed that day, what % were successfully closed. Noisy but earliest signal.</div>
     <div class="chart-wrap tall"><canvas id="dailyChart"></canvas></div>
   </div>
 
   <div class="two-col">
     <div class="card">
-      <h2>4. Open Ticket Age Distribution</h2>
-      <div class="sub">Tickets still open. 21+ day bucket = SLA breach (partners have 21 days).</div>
-      <div class="logic">
-        <b>Table:</b> PROD_DB.DYNAMODB_READ.TASKS (deduped by ID, latest row)<br>
-        <b>Filter:</b> TYPE = 'ROUTER_PICKUP' &nbsp;|&nbsp; STATUS IN (0, 1) &nbsp;|&nbsp; CREATED (IST) ≥ 2025-11-01<br>
-        <b>Age:</b> DATEDIFF(day, CREATED + 330 min IST, CURRENT_DATE)<br>
-        <b>Buckets:</b> 0-7, 8-14, 15-21, 21+
+      <div class="card-head">
+        <h2>4. Open Ticket Age Distribution</h2>
+        <span class="src-wrap"><span class="src-icon">i</span>
+          <div class="src-tip">
+            <b>Table:</b> PROD_DB.DYNAMODB_READ.TASKS (deduped by ID, latest row)<br>
+            <b>Filter:</b> TYPE = 'ROUTER_PICKUP' &nbsp;|&nbsp; STATUS IN (0, 1) &nbsp;|&nbsp; CREATED (IST) ≥ 2025-11-01<br>
+            <b>Age:</b> DATEDIFF(day, CREATED + 330 min IST, CURRENT_DATE)<br>
+            <b>Buckets:</b> 0-7, 8-14, 15-21, 21+ days
+          </div>
+        </span>
       </div>
+      <div class="sub">Tickets still open. 21+ day bucket = SLA breach (partners have 21 days).</div>
       <div class="chart-wrap"><canvas id="openChart"></canvas></div>
     </div>
     <div class="card">
-      <h2>Open Tickets — Table</h2>
+      <div class="card-head">
+        <h2>Open Tickets — Table</h2>
+      </div>
       <div class="sub">Count by age bucket.</div>
       <table id="openTable"></table>
     </div>
@@ -242,8 +269,7 @@ HTML = """<!DOCTYPE html>
 
 <script>
 const DATA = __PAYLOAD__;
-Chart.register(ChartDataLabels);
-Chart.defaults.set('plugins.datalabels', { display: false });
+// Data labels disabled everywhere — users hover to see values.
 
 // ---------- 1. MoM ----------
 (function() {
@@ -253,22 +279,18 @@ Chart.defaults.set('plugins.datalabels', { display: false });
   new Chart(document.getElementById('momChart'), {
     type: 'bar',
     data: { labels, datasets: [{
-      label: 'Recovery %', data: pct,
+      label: 'Success / Total Closed', data: pct,
       backgroundColor: '#2E75B6', borderRadius: 4
     }]},
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => c.parsed.y + '%' } },
-        datalabels: { display: true, anchor: 'end', align: 'top',
-          color: '#1F4E79', font: { weight: 700, size: 11 },
-          formatter: v => v==null?'':v+'%' } },
-      layout: { padding: { top: 22 } },
+        tooltip: { callbacks: { label: c => c.parsed.y + '%' } } },
       scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v+'%' } } }
     }
   });
   // Table
-  let html = '<tr><th>Month</th><th>Created</th><th>Closed</th><th>Recovered</th><th>Failed</th><th>Open</th><th>Recovery %</th></tr>';
+  let html = '<tr><th>Month</th><th>Tickets Created</th><th>Total Closed</th><th>Successfully Closed</th><th>Unsuccessfully Closed</th><th>Open Tickets</th><th>Success / Total Closed</th></tr>';
   m.forEach(r => {
     html += `<tr><td class="label">${r.MONTH}</td><td>${(r.TOTAL_CREATED||0).toLocaleString()}</td><td>${(r.closed||0).toLocaleString()}</td><td>${(r.RECOVERED||0).toLocaleString()}</td><td>${(r.FAILED||0).toLocaleString()}</td><td>${(r.OPEN_TICKETS||0).toLocaleString()}</td><td><b>${r.recovery_pct==null?'—':r.recovery_pct+'%'}</b></td></tr>`;
   });
@@ -288,14 +310,7 @@ Chart.defaults.set('plugins.datalabels', { display: false });
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => c.parsed.y + '%' } },
-        datalabels: { display: ctx => {
-            const last = ctx.dataset.data.length - 1;
-            return ctx.dataIndex === last || ctx.dataIndex % 7 === 0;
-          }, align: 'top', color: '#1F4E79',
-          font: { weight: 700, size: 10 },
-          formatter: v => v==null?'':v+'%' } },
-      layout: { padding: { top: 20 } },
+        tooltip: { callbacks: { label: c => c.parsed.y + '%' } } },
       scales: {
         x: { ticks: { maxTicksLimit: 12 } },
         y: { beginAtZero: true, max: 100, ticks: { callback: v => v+'%' } }
@@ -310,21 +325,14 @@ Chart.defaults.set('plugins.datalabels', { display: false });
   new Chart(document.getElementById('dailyChart'), {
     type: 'line',
     data: { labels: d.map(r => r.RESOLVED_DATE), datasets: [{
-      label: 'Daily recovery %', data: d.map(r => r.recovery_pct),
+      label: 'Success / Total Closed', data: d.map(r => r.recovery_pct),
       borderColor: '#C55A11', backgroundColor: 'rgba(197,90,17,0.08)',
       tension: 0.15, fill: false, pointRadius: 2, borderWidth: 1.5
     }]},
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => c.parsed.y + '%' } },
-        datalabels: { display: ctx => {
-            const last = ctx.dataset.data.length - 1;
-            return ctx.dataIndex === last || ctx.dataIndex % 7 === 0;
-          }, align: 'top', color: '#C55A11',
-          font: { weight: 700, size: 10 },
-          formatter: v => v==null?'':v+'%' } },
-      layout: { padding: { top: 20 } },
+        tooltip: { callbacks: { label: c => c.parsed.y + '%' } } },
       scales: {
         x: { ticks: { maxTicksLimit: 12 } },
         y: { beginAtZero: true, max: 100, ticks: { callback: v => v+'%' } }
@@ -340,20 +348,17 @@ Chart.defaults.set('plugins.datalabels', { display: false });
   new Chart(document.getElementById('openChart'), {
     type: 'bar',
     data: { labels: o.map(r => r.AGE_BUCKET), datasets: [{
-      label: 'Open tickets', data: o.map(r => r.OPEN_TICKETS),
+      label: 'Open Tickets', data: o.map(r => r.OPEN_TICKETS),
       backgroundColor: colors, borderRadius: 4
     }]},
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false },
-        datalabels: { display: true, anchor: 'end', align: 'top',
-          color: '#1F4E79', font: { weight: 700, size: 12 },
-          formatter: v => v==null?'':v.toLocaleString() } },
-      layout: { padding: { top: 22 } },
+        tooltip: { callbacks: { label: c => c.parsed.y.toLocaleString() } } },
       scales: { y: { beginAtZero: true } }
     }
   });
-  let html = '<tr><th>Age bucket</th><th>Open tickets</th></tr>';
+  let html = '<tr><th>Age Bucket</th><th>Open Tickets</th></tr>';
   const total = o.reduce((s,r) => s + (r.OPEN_TICKETS||0), 0);
   o.forEach(r => { html += `<tr><td class="label">${r.AGE_BUCKET}</td><td>${(r.OPEN_TICKETS||0).toLocaleString()}</td></tr>`; });
   html += `<tr><td class="label"><b>Total</b></td><td><b>${total.toLocaleString()}</b></td></tr>`;
