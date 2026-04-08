@@ -1,0 +1,39 @@
+name: Refresh Dashboard
+
+on:
+  schedule:
+    # 09:00 IST = 03:30 UTC, daily
+    - cron: '30 3 * * *'
+  workflow_dispatch: {}  # allow manual trigger from the Actions tab
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Build dashboard
+        env:
+          METABASE_API_KEY: ${{ secrets.METABASE_API_KEY }}
+        run: python build_dashboard.py
+
+      - name: Commit & push if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dashboard.html
+          if git diff --cached --quiet; then
+            echo "No changes."
+          else
+            git commit -m "Auto-refresh dashboard data"
+            git push
+          fi
