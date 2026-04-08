@@ -152,6 +152,7 @@ HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Router Recovery — Live Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; color: #1a1a2e; line-height: 1.5; }
@@ -269,7 +270,9 @@ HTML = """<!DOCTYPE html>
 
 <script>
 const DATA = __PAYLOAD__;
-// Data labels disabled everywhere — users hover to see values.
+// Datalabels plugin loaded but disabled by default; enabled per-chart where needed.
+Chart.register(ChartDataLabels);
+Chart.defaults.set('plugins.datalabels', { display: false });
 
 // ---------- 1. MoM ----------
 (function() {
@@ -310,7 +313,17 @@ const DATA = __PAYLOAD__;
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => c.parsed.y + '%' } } },
+        tooltip: { callbacks: { label: c => c.parsed.y + '%' } },
+        datalabels: {
+          display: ctx => {
+            const last = ctx.dataset.data.length - 1;
+            return ctx.dataIndex === last || ctx.dataIndex % 7 === 0;
+          },
+          align: 'top', color: '#1F4E79',
+          font: { weight: 700, size: 10 },
+          formatter: v => v==null?'':v+'%'
+        } },
+      layout: { padding: { top: 22 } },
       scales: {
         x: { ticks: { maxTicksLimit: 12 } },
         y: { beginAtZero: true, max: 100, ticks: { callback: v => v+'%' } }
@@ -332,7 +345,17 @@ const DATA = __PAYLOAD__;
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => c.parsed.y + '%' } } },
+        tooltip: { callbacks: { label: c => c.parsed.y + '%' } },
+        datalabels: {
+          display: ctx => {
+            const last = ctx.dataset.data.length - 1;
+            return ctx.dataIndex === last || ctx.dataIndex % 7 === 0;
+          },
+          align: 'top', color: '#C55A11',
+          font: { weight: 700, size: 10 },
+          formatter: v => v==null?'':v+'%'
+        } },
+      layout: { padding: { top: 22 } },
       scales: {
         x: { ticks: { maxTicksLimit: 12 } },
         y: { beginAtZero: true, max: 100, ticks: { callback: v => v+'%' } }
