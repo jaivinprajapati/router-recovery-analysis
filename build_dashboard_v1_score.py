@@ -33,45 +33,32 @@ def run(sql):
     cols = [c["name"] for c in d["data"]["cols"]]
     return [dict(zip(cols, row)) for row in d["data"]["rows"]]
 
-# NOTE: Logic aligned with Metabase dashboard #1067 (card 9543, cte1).
-# Success = TASKS.STATUS = 2, Failed = TASKS.STATUS = 3, Open = STATUS IN (0,1).
-# Base universe deduped by ROW_NUMBER() OVER (PARTITION BY ID ORDER BY CREATED DESC) = 1.
-
-TASKS_CTE = """
-WITH cte1 AS (
-    SELECT
-        ID, CREATED, RSLVD_DATETIME, STATUS,
-        ROW_NUMBER() OVER (PARTITION BY ID ORDER BY CREATED DESC) AS rn
-    FROM PROD_DB.DYNAMODB_READ.TASKS
-    WHERE TYPE = 'ROUTER_PICKUP'
-)
-"""
-
 # ---------- Q1: MoM creation-basis recovery ----------
-Q1 = TASKS_CTE + """
+Q1 = """
 SELECT
-    TO_CHAR(DATE_TRUNC('month', DATEADD(minute,330,CREATED)),'YYYY-MM') AS month,
+    TO_CHAR(DATE_TRUNC('month', DATEADD(minute,330,t.CREATED)),'YYYY-MM') AS month,
     COUNT(*) AS total_created,
-    SUM(CASE WHEN STATUS = 2 THEN 1 ELSE 0 END) AS recovered,
-    SUM(CASE WHEN STATUS = 3 THEN 1 ELSE 0 END) AS failed,
-    SUM(CASE WHEN STATUS IN (0,1) THEN 1 ELSE 0 END) AS open_tickets
-FROM cte1
-WHERE rn = 1
-  AND TO_DATE(DATEADD(minute,330,CREATED)) BETWEEN '2025-11-01' AND CURRENT_DATE
+    SUM(CASE WHEN tp.SCORE = 1 THEN 1 ELSE 0 END) AS recovered,
+    SUM(CASE WHEN tp.SCORE = 0 THEN 1 ELSE 0 END) AS failed,
+    SUM(CASE WHEN tp.REPORTERID IS NULL OR tp.TASK_RESOLVED_TIME IS NULL THEN 1 ELSE 0 END) AS open_tickets
+FROM PROD_DB.DYNAMODB_READ.TASKS t
+LEFT JOIN PROD_DB.DYNAMODB.TASK_PERFORMANCE tp
+    ON t.ID = tp.REPORTERID AND tp._FIVETRAN_DELETED = false
+WHERE t.TYPE = 'ROUTER_PICKUP'
+  AND TO_DATE(DATEADD(minute,330,t.CREATED)) BETWEEN '2025-11-01' AND CURRENT_DATE
 GROUP BY 1
 ORDER BY 1
 LIMIT 10000
 """
 
-# ---------- Q2: Daily recovery (resolution date from TP, success flag from TASKS) ----------
-Q2 = TASKS_CTE + """
+# ---------- Q2: Daily recovery (resolution date) ----------
+Q2 = """
 SELECT
     TO_CHAR(TO_DATE(DATEADD(minute,330,tp.TASK_RESOLVED_TIME)),'YYYY-MM-DD') AS resolved_date,
     COUNT(*) AS total_resolved,
-    SUM(CASE WHEN c.STATUS = 2 THEN 1 ELSE 0 END) AS recovered,
-    SUM(CASE WHEN c.STATUS = 3 THEN 1 ELSE 0 END) AS failed
+    SUM(CASE WHEN tp.SCORE = 1 THEN 1 ELSE 0 END) AS recovered,
+    SUM(CASE WHEN tp.SCORE = 0 THEN 1 ELSE 0 END) AS failed
 FROM PROD_DB.DYNAMODB.TASK_PERFORMANCE tp
-LEFT JOIN cte1 c ON tp.REPORTERID = c.ID AND c.rn = 1
 WHERE tp.TASK_TYPE = 'ROUTER_PICKUP'
   AND tp._FIVETRAN_DELETED = false
   AND tp.TASK_RESOLVED_TIME IS NOT NULL
@@ -81,20 +68,23 @@ ORDER BY 1
 LIMIT 10000
 """
 
-# ---------- Q3: Open ticket age distribution (STATUS IN 0,1) ----------
-Q3 = TASKS_CTE + """
+# ---------- Q3: Open ticket age distribution ----------
+# Open = TASKS with no TP record, OR TP record but no TASK_RESOLVED_TIME
+Q3 = """
 SELECT
     CASE
-        WHEN DATEDIFF(day, TO_DATE(DATEADD(minute,330,CREATED)), CURRENT_DATE) BETWEEN 0  AND 7  THEN '0-7 days'
-        WHEN DATEDIFF(day, TO_DATE(DATEADD(minute,330,CREATED)), CURRENT_DATE) BETWEEN 8  AND 14 THEN '8-14 days'
-        WHEN DATEDIFF(day, TO_DATE(DATEADD(minute,330,CREATED)), CURRENT_DATE) BETWEEN 15 AND 21 THEN '15-21 days'
+        WHEN DATEDIFF(day, TO_DATE(DATEADD(minute,330,t.CREATED)), CURRENT_DATE) BETWEEN 0  AND 7  THEN '0-7 days'
+        WHEN DATEDIFF(day, TO_DATE(DATEADD(minute,330,t.CREATED)), CURRENT_DATE) BETWEEN 8  AND 14 THEN '8-14 days'
+        WHEN DATEDIFF(day, TO_DATE(DATEADD(minute,330,t.CREATED)), CURRENT_DATE) BETWEEN 15 AND 21 THEN '15-21 days'
         ELSE '21+ days'
     END AS age_bucket,
     COUNT(*) AS open_tickets
-FROM cte1
-WHERE rn = 1
-  AND STATUS IN (0, 1)
-  AND TO_DATE(DATEADD(minute,330,CREATED)) >= '2025-11-01'
+FROM PROD_DB.DYNAMODB_READ.TASKS t
+LEFT JOIN PROD_DB.DYNAMODB.TASK_PERFORMANCE tp
+    ON t.ID = tp.REPORTERID AND tp._FIVETRAN_DELETED = false
+WHERE t.TYPE = 'ROUTER_PICKUP'
+  AND (tp.REPORTERID IS NULL OR tp.TASK_RESOLVED_TIME IS NULL)
+  AND TO_DATE(DATEADD(minute,330,t.CREATED)) >= '2025-11-01'
 GROUP BY 1
 ORDER BY
     CASE age_bucket
@@ -160,9 +150,7 @@ HTML = """<!DOCTYPE html>
   .container { max-width: 1200px; margin: 0 auto; padding: 28px 24px; }
   .card { background: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); padding: 22px 26px; margin-bottom: 22px; }
   .card h2 { font-size: 15px; font-weight: 700; color: #1F4E79; margin-bottom: 4px; }
-  .card .sub { font-size: 12px; color: #777; margin-bottom: 8px; }
-  .logic { font-size: 11px; color: #555; background: #f4f7fb; border-left: 3px solid #2E75B6; padding: 8px 12px; margin-bottom: 14px; border-radius: 3px; font-family: 'Consolas','Courier New',monospace; line-height: 1.5; }
-  .logic b { color: #1F4E79; font-family: 'Segoe UI', Arial, sans-serif; }
+  .card .sub { font-size: 12px; color: #777; margin-bottom: 16px; }
   .chart-wrap { position: relative; height: 340px; }
   .chart-wrap.tall { height: 380px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
@@ -177,20 +165,13 @@ HTML = """<!DOCTYPE html>
 <body>
 <div class="header">
   <h1>Router Recovery — Live Dashboard</h1>
-  <p>Wiom Analytics &nbsp;|&nbsp; Auto-refreshed daily &nbsp;|&nbsp; Logic aligned with Metabase dashboard #1067 (PICKUP Tickets)</p>
+  <p>Wiom Analytics &nbsp;|&nbsp; Auto-refreshed daily &nbsp;|&nbsp; Recovery = SCORE=1 in TASK_PERFORMANCE</p>
 </div>
 <div class="container">
 
   <div class="card">
     <h2>1. Monthly Recovery Rate — creation month basis</h2>
     <div class="sub">Denominator: closed tickets (recovered + failed) created that month. Latest months have 21-day cohort lag.</div>
-    <div class="logic">
-      <b>Table:</b> PROD_DB.DYNAMODB_READ.TASKS (deduped by ID, latest row)<br>
-      <b>Filter:</b> TYPE = 'ROUTER_PICKUP' &nbsp;|&nbsp; CREATED (IST) between 2025-11-01 and today<br>
-      <b>Month:</b> DATE_TRUNC('month', CREATED + 330 min IST)<br>
-      <b>Recovered:</b> STATUS = 2 &nbsp;|&nbsp; <b>Failed:</b> STATUS = 3 &nbsp;|&nbsp; <b>Open:</b> STATUS IN (0, 1)<br>
-      <b>Rate:</b> recovered ÷ (recovered + failed)
-    </div>
     <div class="chart-wrap"><canvas id="momChart"></canvas></div>
     <table id="momTable"></table>
   </div>
@@ -198,36 +179,19 @@ HTML = """<!DOCTYPE html>
   <div class="card">
     <h2>2. Week-on-Week — 7-day rolling avg daily recovery rate</h2>
     <div class="sub">Smoothed daily recovery %. Resolution-date basis. No cohort lag — shows operational performance in near-real-time.</div>
-    <div class="logic">
-      <b>Tables:</b> PROD_DB.DYNAMODB.TASK_PERFORMANCE (tp) LEFT JOIN PROD_DB.DYNAMODB_READ.TASKS (deduped) ON tp.REPORTERID = TASKS.ID<br>
-      <b>Filter:</b> tp.TASK_TYPE = 'ROUTER_PICKUP' &nbsp;|&nbsp; tp._FIVETRAN_DELETED = false &nbsp;|&nbsp; tp.TASK_RESOLVED_TIME NOT NULL<br>
-      <b>Date:</b> tp.TASK_RESOLVED_TIME (+ 330 min IST) &nbsp;|&nbsp; range: 2025-11-01 → today<br>
-      <b>Recovered:</b> TASKS.STATUS = 2 &nbsp;|&nbsp; <b>Denominator:</b> all tp rows resolved that day<br>
-      <b>Rolling:</b> 7-day trailing sum(recovered) ÷ sum(total_resolved)
-    </div>
     <div class="chart-wrap tall"><canvas id="rollingChart"></canvas></div>
   </div>
 
   <div class="card">
     <h2>3. Day-on-Day — raw daily recovery rate</h2>
-    <div class="sub">Of all tickets closed that day, what % had STATUS = 2. Noisy but earliest signal.</div>
-    <div class="logic">
-      <b>Tables / filter / date:</b> same as View 2 above (TASK_PERFORMANCE ⟕ TASKS, resolution date)<br>
-      <b>Rate:</b> (rows where TASKS.STATUS = 2) ÷ (all rows resolved that day) — no smoothing
-    </div>
+    <div class="sub">Of all tickets closed that day, what % had SCORE=1. Noisy but earliest signal.</div>
     <div class="chart-wrap tall"><canvas id="dailyChart"></canvas></div>
   </div>
 
   <div class="two-col">
     <div class="card">
       <h2>4. Open Ticket Age Distribution</h2>
-      <div class="sub">Tickets still open. 21+ day bucket = SLA breach (partners have 21 days).</div>
-      <div class="logic">
-        <b>Table:</b> PROD_DB.DYNAMODB_READ.TASKS (deduped by ID, latest row)<br>
-        <b>Filter:</b> TYPE = 'ROUTER_PICKUP' &nbsp;|&nbsp; STATUS IN (0, 1) &nbsp;|&nbsp; CREATED (IST) ≥ 2025-11-01<br>
-        <b>Age:</b> DATEDIFF(day, CREATED + 330 min IST, CURRENT_DATE)<br>
-        <b>Buckets:</b> 0-7, 8-14, 15-21, 21+
-      </div>
+      <div class="sub">Tickets with no resolved_time. 21+ day bucket = SLA breach (partners have 21 days).</div>
       <div class="chart-wrap"><canvas id="openChart"></canvas></div>
     </div>
     <div class="card">
