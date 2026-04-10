@@ -404,7 +404,7 @@ for res_key, res_label in [("ROUTER_RECOVERED", "Router Recovered / Total Closed
     tr, trc = trend(rw)
     vb, vd = vs_bl(rw[2], r_bl, higher_is_good=(res_key != "GENERAL_SUCCESS"))
     summary_rows.append({
-        "metric": f"  {res_label}", "type": "",
+        "metric": res_label, "type": "", "sub": True,
         "w3": rw[0], "w2": rw[1], "w1": rw[2],
         "trend": tr, "trend_dir": trc,
         "baseline": r_bl, "vs_bl": vb, "vs_dir": vd,
@@ -545,6 +545,8 @@ HTML = r"""<!DOCTYPE html>
   .type-leading { background: #e6f0e6; color: #375623; }
   .row-bad td { background: #FFF0F0; }
   .row-bad td:first-child { border-left: 3px solid #C00000; }
+  .row-sub td { font-size: 11.5px; color: #555; }
+  .row-sub td:first-child { padding-left: 28px; font-weight: 400; font-style: italic; }
 
   .chart-wrap { position: relative; height: 300px; }
   .chart-wrap.tall { height: 340px; }
@@ -724,15 +726,17 @@ Chart.defaults.set('plugins.datalabels', { display: false });
       if (r.fmt==='pct') return v+'%';
       return typeof v==='number'? v.toLocaleString() : v;
     };
+    const isSub = r.sub===true;
     const trendCls = r.trend_dir==='up'?'trend-up':r.trend_dir==='down'?'trend-down':'trend-neutral';
     const trendIcon = r.trend==='Up'?'&uarr; Up':r.trend==='Down'?'&darr; Down':r.trend==='Flat'?'&rarr; Flat':'-';
     const vsCls = r.vs_dir==='good'?'vs-good':r.vs_dir==='bad'?'vs-bad':'vs-neutral';
     const sigCls = r.signal==='good'?'sig-good':r.signal==='bad'?'sig-bad':r.signal==='warn'?'sig-warn':'sig-neutral';
-    const typeCls = r.type==='Leading'?'type-leading':'type-lagging';
-    const rowCls = r.signal==='bad'?'row-bad':'';
+    const typeCls = r.type==='Leading'?'type-leading':r.type==='Lagging'?'type-lagging':'';
+    const typeHtml = r.type ? `<span class="type-tag ${typeCls}">${r.type}</span>` : '';
+    const rowCls = (r.signal==='bad'?'row-bad':'') + (isSub?' row-sub':'');
     html += `<tr class="${rowCls}">
       <td>${r.metric}</td>
-      <td><span class="type-tag ${typeCls}">${r.type}</span></td>
+      <td>${typeHtml}</td>
       <td>${fmt(r.w3)}</td><td>${fmt(r.w2)}</td><td>${fmt(r.w1)}</td>
       <td class="${trendCls}">${trendIcon}</td>
       <td>${r.baseline!=null?fmt(r.baseline):'-'}</td>
