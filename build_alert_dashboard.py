@@ -108,6 +108,22 @@ GROUP BY 1 ORDER BY 1
 LIMIT 10000
 """
 
+# ---- Q3c: Daily resolution type breakdown (for summary table) ----
+Q3c = TASKS_CTE + """
+SELECT TO_CHAR(TO_DATE(DATEADD(minute,330,tp.TASK_RESOLVED_TIME)),'YYYY-MM-DD') AS d,
+       COUNT(*) AS total_closed,
+       SUM(CASE WHEN c.STATUS = 2 AND tp.TASK_RESOLUTION_TYPE = 'ROUTER_RECOVERED' THEN 1 ELSE 0 END) AS router_recovered,
+       SUM(CASE WHEN c.STATUS = 2 AND tp.TASK_RESOLUTION_TYPE = 'CUSTOMER_RECOVERED' THEN 1 ELSE 0 END) AS customer_recovered,
+       SUM(CASE WHEN c.STATUS = 2 AND (tp.TASK_RESOLUTION_TYPE = 'GENERAL' OR tp.TASK_RESOLUTION_TYPE IS NULL) THEN 1 ELSE 0 END) AS general_success
+FROM PROD_DB.DYNAMODB.TASK_PERFORMANCE tp
+LEFT JOIN cte1 c ON tp.REPORTERID = c.ID AND c.rn = 1
+WHERE tp.TASK_TYPE = 'ROUTER_PICKUP' AND tp._FIVETRAN_DELETED = false
+  AND tp.TASK_RESOLVED_TIME IS NOT NULL
+  AND TO_DATE(DATEADD(minute,330,tp.TASK_RESOLVED_TIME)) BETWEEN DATEADD(day,-120,CURRENT_DATE) AND CURRENT_DATE
+GROUP BY 1 ORDER BY 1
+LIMIT 10000
+"""
+
 # ---- Q3b: MoM success/failed (creation month, 21-day rule) ----
 Q3b = TASKS_CTE + """
 SELECT TO_CHAR(DATE_TRUNC('month',DATEADD(minute,330,CREATED)),'YYYY-MM') AS month,
@@ -196,6 +212,7 @@ queries = [
     ("Q1 (Missed PUTs)", Q1),
     ("Q2 (Assignments)", Q2),
     ("Q3 (Daily success/fail)", Q3),
+    ("Q3c (Resolution types)", Q3c),
     ("Q3b (MoM)", Q3b),
     ("Q4 (Open aging)", Q4),
     ("Q6 (RA aging)", Q6),
@@ -370,6 +387,30 @@ summary_rows.append({
     "signal": "bad" if vd3 == "bad" else ("good" if vd3 == "good" else "neutral"),
     "fmt": "pct"
 })
+
+# Row 3b: Resolution type breakdown
+res_daily = sorted(results["Q3c (Resolution types)"], key=lambda x: x["D"])
+for res_key, res_label in [("ROUTER_RECOVERED", "Router Recovered / Total Closed"),
+                            ("CUSTOMER_RECOVERED", "Customer Recovered / Total Closed"),
+                            ("GENERAL_SUCCESS", "General (unclassified) / Total Closed")]:
+    rw = []
+    for wl2, ws, we in week_ranges:
+        num = sum(d.get(res_key) or 0 for d in res_daily if in_range(d["D"], ws, we))
+        den = sum(d.get("TOTAL_CLOSED") or 0 for d in res_daily if in_range(d["D"], ws, we))
+        rw.append(round(num * 100.0 / den, 1) if den else None)
+    bl_num = sum(d.get(res_key) or 0 for d in res_daily if in_range(d["D"], bl_start, bl_end))
+    bl_den = sum(d.get("TOTAL_CLOSED") or 0 for d in res_daily if in_range(d["D"], bl_start, bl_end))
+    r_bl = round(bl_num * 100.0 / bl_den, 1) if bl_den else None
+    tr, trc = trend(rw)
+    vb, vd = vs_bl(rw[2], r_bl, higher_is_good=(res_key != "GENERAL_SUCCESS"))
+    summary_rows.append({
+        "metric": f"  {res_label}", "type": "",
+        "w3": rw[0], "w2": rw[1], "w1": rw[2],
+        "trend": tr, "trend_dir": trc,
+        "baseline": r_bl, "vs_bl": vb, "vs_dir": vd,
+        "signal": "neutral",
+        "fmt": "pct"
+    })
 
 # Row 4: Open aging — one row per bucket
 open_buckets = {"0-7 days": 0, "8-14 days": 0, "15-21 days": 0, "21+ days": 0}
