@@ -21,16 +21,21 @@ jobs:
       - name: Install deps
         run: pip install requests
 
-      - name: Build dashboard
+      - name: Build RCA dashboard
         env:
           METABASE_API_KEY: ${{ secrets.METABASE_API_KEY }}
         run: python build_dashboard.py
+
+      - name: Build alert dashboard
+        env:
+          METABASE_API_KEY: ${{ secrets.METABASE_API_KEY }}
+        run: python build_alert_dashboard.py
 
       - name: Commit & push if changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dashboard.html
+          git add dashboard.html alert_dashboard.html
           if git diff --cached --quiet; then
             echo "No changes."
           else
