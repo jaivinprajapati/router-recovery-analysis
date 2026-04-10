@@ -371,15 +371,30 @@ summary_rows.append({
     "fmt": "pct"
 })
 
-# Row 4: Open aging danger zone
-summary_rows.append({
-    "metric": "Open tickets (15-21d + 21d+)", "type": "Leading",
-    "w3": None, "w2": None, "w1": m4_danger,
-    "trend": "-", "trend_dir": "neutral",
-    "baseline": None, "vs_bl": "-", "vs_dir": "neutral",
-    "signal": "bad" if m4_danger > 500 else ("warn" if m4_danger > 100 else "good"),
-    "fmt": "int"
-})
+# Row 4: Open aging — one row per bucket
+open_buckets = {"0-7 days": 0, "8-14 days": 0, "15-21 days": 0, "21+ days": 0}
+for r in open_ages_data:
+    b = r.get("AGE_BUCKET")
+    if b in open_buckets:
+        open_buckets[b] = r.get("OPEN_TICKETS") or 0
+
+for bucket, count in open_buckets.items():
+    if bucket == "0-7 days":
+        sig = "good"
+    elif bucket == "8-14 days":
+        sig = "warn" if count > 2000 else "neutral"
+    elif bucket == "15-21 days":
+        sig = "bad" if count > 1000 else ("warn" if count > 500 else "neutral")
+    else:  # 21+
+        sig = "bad" if count > 50 else ("warn" if count > 10 else "good")
+    summary_rows.append({
+        "metric": f"Open tickets ({bucket})", "type": "Leading",
+        "w3": None, "w2": None, "w1": count,
+        "trend": "-", "trend_dir": "neutral",
+        "baseline": None, "vs_bl": "-", "vs_dir": "neutral",
+        "signal": sig,
+        "fmt": "int"
+    })
 
 # Row 5: Failed rate
 t5, tc5 = trend(m5_weeks)
