@@ -408,13 +408,41 @@ summary_rows.append({
     "fmt": "pct"
 })
 
-# Row 6: RA returns (weekly)
+# Row 6: RA pending — one row per aging bucket
+ra_bucket_order = ["0-7 days", "8-14 days", "15-21 days", "22-30 days", "30+ days"]
+ra_bucket_data = {r.get("AGE_BUCKET"): r for r in ra_aging}
+for bucket in ra_bucket_order:
+    r = ra_bucket_data.get(bucket, {})
+    pending = r.get("STILL_PENDING") or 0
+    picked = r.get("RA_PICKED") or 0
+    total = pending + picked
+    pickup_pct = round(picked * 100.0 / total, 0) if total else None
+    if bucket in ("0-7 days", "8-14 days"):
+        sig = "neutral"
+    elif bucket == "15-21 days":
+        sig = "warn" if pending > 1000 else "neutral"
+    elif bucket == "22-30 days":
+        sig = "bad" if pending > 500 else ("warn" if pending > 200 else "neutral")
+    else:  # 30+
+        sig = "bad" if pending > 300 else ("warn" if pending > 100 else "neutral")
+    summary_rows.append({
+        "metric": f"RA pending ({bucket})", "type": "Lagging",
+        "w3": None, "w2": None, "w1": pending,
+        "trend": "-", "trend_dir": "neutral",
+        "baseline": None,
+        "vs_bl": f"{pickup_pct:.0f}% picked" if pickup_pct is not None else "-",
+        "vs_dir": "good" if pickup_pct and pickup_pct > 30 else ("bad" if pickup_pct is not None and pickup_pct < 15 else "neutral"),
+        "signal": sig,
+        "fmt": "int"
+    })
+
+# RA weekly returns trend row
 t6, tc6 = trend(m6b_weeks)
 summary_rows.append({
-    "metric": "RA Returns (weekly)", "type": "Lagging",
+    "metric": "RA Returns (weekly total)", "type": "Lagging",
     "w3": m6b_weeks[0], "w2": m6b_weeks[1], "w1": m6b_weeks[2],
     "trend": t6, "trend_dir": tc6,
-    "baseline": None, "vs_bl": f"{m6_pending:,} pending", "vs_dir": "bad" if m6_pending > 5000 else "neutral",
+    "baseline": None, "vs_bl": "-", "vs_dir": "neutral",
     "signal": "bad" if tc6 == "down" else ("good" if tc6 == "up" else "neutral"),
     "fmt": "int"
 })
