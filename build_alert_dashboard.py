@@ -232,6 +232,178 @@ for m in mom:
     m["failed_pct"] = round((m["FAILED"] or 0) * 100.0 / closed, 1) if closed else None
 
 last_refresh = dt.datetime.now(dt.timezone(dt.timedelta(hours=5, minutes=30)))
+today = last_refresh.date()
+
+# ---------- Build summary table data ----------
+# Helper: get ISO week Monday for a date
+def week_monday(d):
+    if isinstance(d, str): d = dt.date.fromisoformat(d[:10])
+    return d - dt.timedelta(days=d.weekday())
+
+# Last 3 full weeks (W-1 = most recent complete, W-3 = oldest)
+last_monday = week_monday(today)
+w1_start = last_monday - dt.timedelta(weeks=1)
+w2_start = last_monday - dt.timedelta(weeks=2)
+w3_start = last_monday - dt.timedelta(weeks=3)
+week_ranges = [
+    ("W-3", w3_start, w3_start + dt.timedelta(days=6)),
+    ("W-2", w2_start, w2_start + dt.timedelta(days=6)),
+    ("W-1", w1_start, w1_start + dt.timedelta(days=6)),
+]
+week_labels = [f"{ws.strftime('%d %b')}" for _,ws,_ in week_ranges]
+
+# Baseline: Nov-Dec 2025
+bl_start = dt.date(2025, 11, 1)
+bl_end = dt.date(2025, 12, 31)
+
+def in_range(d_str, start, end):
+    d = dt.date.fromisoformat(d_str[:10]) if isinstance(d_str, str) else d_str
+    return start <= d <= end
+
+# M1: Missed PUTs — daily avg per week
+missed = results["Q1 (Missed PUTs)"]
+m1_weeks = []
+for wl, ws, we in week_ranges:
+    vals = [r["MISSED_PUTS"] or 0 for r in missed if r.get("D") and in_range(str(r["D"])[:10], ws, we)]
+    m1_weeks.append(round(sum(vals) / max(len(vals),1), 0) if vals else None)
+m1_bl = None  # no baseline for missed PUTs (query only goes 60d back)
+
+# M2: Assignments — daily avg per week
+assigns = results["Q2 (Assignments)"]
+m2_weeks = []
+for wl, ws, we in week_ranges:
+    vals = [r["ASSIGNED"] or 0 for r in assigns if r.get("D") and in_range(str(r["D"])[:10], ws, we)]
+    m2_weeks.append(round(sum(vals) / max(len(vals),1), 0) if vals else None)
+# Baseline
+bl_vals = [r["ASSIGNED"] or 0 for r in assigns if r.get("D") and in_range(str(r["D"])[:10], bl_start, bl_end)]
+m2_bl = round(sum(bl_vals) / max(len(bl_vals),1), 0) if bl_vals else None
+
+# M3: Success rate — weekly %
+m3_weeks = []
+for wl, ws, we in week_ranges:
+    s = sum(d.get("SUCCESS") or 0 for d in daily if in_range(d["D"], ws, we))
+    t = sum(d.get("TOTAL_CLOSED") or 0 for d in daily if in_range(d["D"], ws, we))
+    m3_weeks.append(round(s * 100.0 / t, 1) if t else None)
+bl_s = sum(d.get("SUCCESS") or 0 for d in daily if in_range(d["D"], bl_start, bl_end))
+bl_t = sum(d.get("TOTAL_CLOSED") or 0 for d in daily if in_range(d["D"], bl_start, bl_end))
+m3_bl = round(bl_s * 100.0 / bl_t, 1) if bl_t else None
+
+# M4: Open aging — snapshot (15-21d + 21+ count)
+open_ages_data = results["Q4 (Open aging)"]
+m4_danger = sum(r["OPEN_TICKETS"] or 0 for r in open_ages_data if r.get("AGE_BUCKET") in ("15-21 days","21+ days"))
+
+# M5: Failed rate — weekly %
+m5_weeks = []
+for wl, ws, we in week_ranges:
+    f = sum(d.get("FAILED") or 0 for d in daily if in_range(d["D"], ws, we))
+    t = sum(d.get("TOTAL_CLOSED") or 0 for d in daily if in_range(d["D"], ws, we))
+    m5_weeks.append(round(f * 100.0 / t, 1) if t else None)
+bl_f = sum(d.get("FAILED") or 0 for d in daily if in_range(d["D"], bl_start, bl_end))
+m5_bl = round(bl_f * 100.0 / bl_t, 1) if bl_t else None
+
+# M6: RA pending — total still pending
+ra_aging = results["Q6 (RA aging)"]
+m6_pending = sum(r.get("STILL_PENDING") or 0 for r in ra_aging)
+m6_picked = sum(r.get("RA_PICKED") or 0 for r in ra_aging)
+m6_total = m6_pending + m6_picked
+m6_pickup_pct = round(m6_picked * 100.0 / m6_total, 1) if m6_total else None
+
+# RA weekly returns for W-1,W-2,W-3
+ra_wk = results["Q6b (RA weekly)"]
+m6b_weeks = []
+for wl, ws, we in week_ranges:
+    vals = [r["RA_RETURNS"] or 0 for r in ra_wk if r.get("WEEK_START") and in_range(str(r["WEEK_START"])[:10], ws, we)]
+    m6b_weeks.append(sum(vals) if vals else None)
+
+# Trend helper
+def trend(vals):
+    nums = [v for v in vals if v is not None]
+    if len(nums) < 2: return "-", "neutral"
+    diff = nums[-1] - nums[-2]
+    pct = abs(diff / nums[-2] * 100) if nums[-2] else 0
+    if pct < 3: return "Flat", "neutral"
+    return ("Up" if diff > 0 else "Down"), ("up" if diff > 0 else "down")
+
+# vs baseline helper
+def vs_bl(current, baseline, higher_is_good=True):
+    if current is None or baseline is None: return "-", "neutral"
+    diff = current - baseline
+    pct = round(diff / baseline * 100, 1) if baseline else 0
+    sign = "+" if diff >= 0 else ""
+    direction = "good" if (diff >= 0 and higher_is_good) or (diff < 0 and not higher_is_good) else "bad"
+    return f"{sign}{pct}%", direction
+
+# Build summary rows
+summary_rows = []
+
+# Row 1: Missed PUTs
+t1, tc1 = trend(m1_weeks)
+summary_rows.append({
+    "metric": "Churned without PUT (daily avg)", "type": "Lagging",
+    "w3": m1_weeks[0], "w2": m1_weeks[1], "w1": m1_weeks[2],
+    "trend": t1, "trend_dir": tc1,
+    "baseline": m1_bl, "vs_bl": "-", "vs_dir": "neutral",
+    "signal": "bad" if tc1 == "up" else ("good" if tc1 == "down" else "neutral"),
+    "fmt": "int"
+})
+
+# Row 2: Assignments
+t2, tc2 = trend(m2_weeks)
+vb2, vd2 = vs_bl(m2_weeks[2], m2_bl, higher_is_good=True)
+summary_rows.append({
+    "metric": "PUT Assigned (daily avg)", "type": "Leading",
+    "w3": m2_weeks[0], "w2": m2_weeks[1], "w1": m2_weeks[2],
+    "trend": t2, "trend_dir": tc2,
+    "baseline": m2_bl, "vs_bl": vb2, "vs_dir": vd2,
+    "signal": "bad" if tc2 == "down" else ("good" if tc2 == "up" else "neutral"),
+    "fmt": "int"
+})
+
+# Row 3: Success rate
+t3, tc3 = trend(m3_weeks)
+vb3, vd3 = vs_bl(m3_weeks[2], m3_bl, higher_is_good=True)
+summary_rows.append({
+    "metric": "Success / Total Closed", "type": "Lagging",
+    "w3": m3_weeks[0], "w2": m3_weeks[1], "w1": m3_weeks[2],
+    "trend": t3, "trend_dir": tc3,
+    "baseline": m3_bl, "vs_bl": vb3, "vs_dir": vd3,
+    "signal": "bad" if vd3 == "bad" else ("good" if vd3 == "good" else "neutral"),
+    "fmt": "pct"
+})
+
+# Row 4: Open aging danger zone
+summary_rows.append({
+    "metric": "Open tickets (15-21d + 21d+)", "type": "Leading",
+    "w3": None, "w2": None, "w1": m4_danger,
+    "trend": "-", "trend_dir": "neutral",
+    "baseline": None, "vs_bl": "-", "vs_dir": "neutral",
+    "signal": "bad" if m4_danger > 500 else ("warn" if m4_danger > 100 else "good"),
+    "fmt": "int"
+})
+
+# Row 5: Failed rate
+t5, tc5 = trend(m5_weeks)
+vb5, vd5 = vs_bl(m5_weeks[2], m5_bl, higher_is_good=False)
+summary_rows.append({
+    "metric": "Failed / Total Closed", "type": "Lagging",
+    "w3": m5_weeks[0], "w2": m5_weeks[1], "w1": m5_weeks[2],
+    "trend": t5, "trend_dir": tc5,
+    "baseline": m5_bl, "vs_bl": vb5, "vs_dir": vd5,
+    "signal": "bad" if vd5 == "bad" else ("good" if vd5 == "good" else "neutral"),
+    "fmt": "pct"
+})
+
+# Row 6: RA returns (weekly)
+t6, tc6 = trend(m6b_weeks)
+summary_rows.append({
+    "metric": "RA Returns (weekly)", "type": "Lagging",
+    "w3": m6b_weeks[0], "w2": m6b_weeks[1], "w1": m6b_weeks[2],
+    "trend": t6, "trend_dir": tc6,
+    "baseline": None, "vs_bl": f"{m6_pending:,} pending", "vs_dir": "bad" if m6_pending > 5000 else "neutral",
+    "signal": "bad" if tc6 == "down" else ("good" if tc6 == "up" else "neutral"),
+    "fmt": "int"
+})
+
 payload = {
     "missed_puts": results["Q1 (Missed PUTs)"],
     "assignments": results["Q2 (Assignments)"],
@@ -240,6 +412,8 @@ payload = {
     "open_ages": results["Q4 (Open aging)"],
     "ra_aging": results["Q6 (RA aging)"],
     "ra_weekly": results["Q6b (RA weekly)"],
+    "summary": summary_rows,
+    "week_labels": week_labels,
     "last_refresh_ist": last_refresh.strftime("%Y-%m-%d %H:%M IST"),
 }
 
@@ -273,6 +447,32 @@ HTML = r"""<!DOCTYPE html>
   .src-tip b { color: #1F4E79; font-family: 'Segoe UI', Arial, sans-serif; }
   .src-wrap:hover .src-tip { display: block; }
 
+  /* Summary table */
+  .summary-card { background: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); padding: 20px 24px; margin-bottom: 20px; }
+  .summary-card h2 { font-size: 15px; font-weight: 700; color: #1F4E79; margin-bottom: 12px; }
+  .stbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .stbl th { background: #8B2252; color: white; padding: 8px 12px; text-align: center; font-weight: 600; font-size: 11.5px; white-space: nowrap; }
+  .stbl th:first-child { text-align: left; }
+  .stbl td { padding: 7px 12px; text-align: center; border-bottom: 1px solid #eee; }
+  .stbl td:first-child { text-align: left; font-weight: 500; }
+  .stbl tr:hover td { background: #fafbfd; }
+  .stbl .trend-up { color: #C00000; font-weight: 700; }
+  .stbl .trend-down { color: #375623; font-weight: 700; }
+  .stbl .trend-neutral { color: #666; }
+  .stbl .vs-good { color: #375623; font-weight: 600; }
+  .stbl .vs-bad { color: #C00000; font-weight: 600; }
+  .stbl .vs-neutral { color: #666; }
+  .sig { display: inline-block; width: 14px; height: 14px; border-radius: 3px; }
+  .sig-good { background: #375623; }
+  .sig-bad { background: #C00000; }
+  .sig-warn { background: #C55A11; }
+  .sig-neutral { background: #ccc; }
+  .stbl .type-tag { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 10px; }
+  .type-lagging { background: #f4e6ec; color: #8B2252; }
+  .type-leading { background: #e6f0e6; color: #375623; }
+  .row-bad td { background: #FFF0F0; }
+  .row-bad td:first-child { border-left: 3px solid #C00000; }
+
   .chart-wrap { position: relative; height: 300px; }
   .chart-wrap.tall { height: 340px; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
@@ -302,6 +502,12 @@ HTML = r"""<!DOCTYPE html>
   <p>Wiom Analytics &nbsp;|&nbsp; Auto-refreshed daily 09:00 IST &nbsp;|&nbsp; 6 metrics across the PUT lifecycle</p>
 </div>
 <div class="container">
+
+  <!-- ============ SUMMARY TABLE ============ -->
+  <div class="summary-card">
+    <h2>Weekly Signal Summary</h2>
+    <table class="stbl" id="summaryTable"></table>
+  </div>
 
   <!-- ============ METRIC 1 ============ -->
   <div class="card">
@@ -433,6 +639,36 @@ HTML = r"""<!DOCTYPE html>
 const DATA = __PAYLOAD__;
 Chart.register(ChartDataLabels);
 Chart.defaults.set('plugins.datalabels', { display: false });
+
+// ---- Summary table ----
+(function(){
+  const s = DATA.summary;
+  const wl = DATA.week_labels;
+  let html = `<tr><th>Metric</th><th>Type</th><th>${wl[0]}<br>W-3</th><th>${wl[1]}<br>W-2</th><th>${wl[2]}<br>W-1</th><th>W Trend</th><th>Historical<br>Baseline</th><th>vs Baseline</th><th>Signal</th></tr>`;
+  s.forEach(r => {
+    const fmt = v => {
+      if (v==null||v===undefined) return '-';
+      if (r.fmt==='pct') return v+'%';
+      return typeof v==='number'? v.toLocaleString() : v;
+    };
+    const trendCls = r.trend_dir==='up'?'trend-up':r.trend_dir==='down'?'trend-down':'trend-neutral';
+    const trendIcon = r.trend==='Up'?'&uarr; Up':r.trend==='Down'?'&darr; Down':r.trend==='Flat'?'&rarr; Flat':'-';
+    const vsCls = r.vs_dir==='good'?'vs-good':r.vs_dir==='bad'?'vs-bad':'vs-neutral';
+    const sigCls = r.signal==='good'?'sig-good':r.signal==='bad'?'sig-bad':r.signal==='warn'?'sig-warn':'sig-neutral';
+    const typeCls = r.type==='Leading'?'type-leading':'type-lagging';
+    const rowCls = r.signal==='bad'?'row-bad':'';
+    html += `<tr class="${rowCls}">
+      <td>${r.metric}</td>
+      <td><span class="type-tag ${typeCls}">${r.type}</span></td>
+      <td>${fmt(r.w3)}</td><td>${fmt(r.w2)}</td><td>${fmt(r.w1)}</td>
+      <td class="${trendCls}">${trendIcon}</td>
+      <td>${r.baseline!=null?fmt(r.baseline):'-'}</td>
+      <td class="${vsCls}">${r.vs_bl}</td>
+      <td><span class="sig ${sigCls}"></span></td>
+    </tr>`;
+  });
+  document.getElementById('summaryTable').innerHTML = html;
+})();
 
 function switchTab(el, group, tab) {
   document.querySelectorAll('.tab[onclick*="'+group+'"]').forEach(t => t.classList.remove('active'));
