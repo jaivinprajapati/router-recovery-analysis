@@ -436,17 +436,6 @@ for bucket in ra_bucket_order:
         "fmt": "int"
     })
 
-# RA weekly returns trend row
-t6, tc6 = trend(m6b_weeks)
-summary_rows.append({
-    "metric": "RA Returns (weekly total)", "type": "Lagging",
-    "w3": m6b_weeks[0], "w2": m6b_weeks[1], "w1": m6b_weeks[2],
-    "trend": t6, "trend_dir": tc6,
-    "baseline": None, "vs_bl": "-", "vs_dir": "neutral",
-    "signal": "bad" if tc6 == "down" else ("good" if tc6 == "up" else "neutral"),
-    "fmt": "int"
-})
-
 payload = {
     "missed_puts": results["Q1 (Missed PUTs)"],
     "assignments": results["Q2 (Assignments)"],
